@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import math
 import base64
+from io import BytesIO
+from urllib.parse import urlsplit
 from html import escape as escape_xml
 from functools import lru_cache
 from dataclasses import dataclass, replace
@@ -23,6 +25,15 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import streamlit as st
+
+# ===========================================================================
+# CHỖ NHẬP LINK WEB CHÍNH THỨC ĐỂ TẠO MÃ QR
+# Khi đưa WaveLab lên Streamlit Community Cloud, dán URL công khai vào đây.
+# Ví dụ: WEB_APP_URL = "https://wavelab-vswr.streamlit.app/"
+# Để trống khi chưa triển khai. QR chưa xuất hiện cho đến khi có URL hợp lệ.
+# Khi điền tại đây, mọi người truy cập ứng dụng đều thấy cùng một mã QR.
+# ===========================================================================
+WEB_APP_URL = "https://n8cd3kythuatsieucaotan.streamlit.app/"  # <-- DÁN LINK WEB SAU KHI ĐƯA LÊN ĐÁM MÂY, GIỮ DẤU NGOẶC KÉP
 
 # ===========================================================================
 # KHỐI LÕI KHOA HỌC – GIỮ NGUYÊN TỪ V1, KHÔNG CHỈNH SỬA
@@ -862,9 +873,87 @@ def plot_single_case(conf: LineConfig, color: str, height: int = 335) -> go.Figu
     return fig
 
 
+# MÃ QR TRUY CẬP WEB ---------------------------------------------------------
+# QR chỉ mã hóa URL do người dùng cấu hình; không tự đoán địa chỉ localhost.
+# Mọi hàm trong khối này chỉ phục vụ giao diện, không ảnh hưởng phép tính VSWR.
+
+
+def valid_web_address(address: str) -> str:
+    """Chỉ chấp nhận một đường dẫn HTTP(S) đầy đủ, không có thông tin đăng nhập."""
+    address = (address or "").strip()
+    try:
+        parsed = urlsplit(address)
+        if (parsed.scheme not in ("http", "https") or not parsed.hostname
+                or parsed.username is not None or parsed.password is not None):
+            return ""
+        _ = parsed.port  # Reject invalid ports.
+    except ValueError:
+        return ""
+    return address
+
+
+def is_localhost_url(address: str) -> bool:
+    host = (urlsplit(address).hostname or "").lower()
+    return host in ("localhost", "127.0.0.1", "0.0.0.0", "::1")
+
+
+@st.cache_data(show_spinner=False)
+def qr_png_bytes(url: str) -> bytes:
+    """Tạo QR ngay trên máy chủ, không gửi URL sang dịch vụ tạo QR bên ngoài."""
+    import qrcode
+    qr = qrcode.QRCode(
+        version=None,
+        error_correction=qrcode.constants.ERROR_CORRECT_H,
+        box_size=9,
+        border=4,
+    )
+    qr.add_data(url)
+    qr.make(fit=True)
+    result = qr.make_image(fill_color="#102333", back_color="#ffffff")
+    output = BytesIO()
+    result.save(output, format="PNG")
+    return output.getvalue()
+
+
 # SIDEBAR --------------------------------------------------------------------
 with st.sidebar:
     st.markdown('<div class="side-brand"><strong>WaveLab</strong><small>Mô phỏng đường dây siêu cao tần</small></div>', unsafe_allow_html=True)
+    with st.expander("Mã QR truy cập Web", expanded=bool(WEB_APP_URL.strip())):
+        st.caption("Dán liên kết công khai của WaveLab sau khi triển khai lên đám mây.")
+        entered_url = st.text_input(
+            "Địa chỉ Web (URL)",
+            value=WEB_APP_URL,
+            placeholder="https://ten-ung-dung.streamlit.app/",
+            key="wl_qr_url_input",
+            help="Nhập tại đây để xem thử QR trong phiên hiện tại. "
+                 "Muốn QR hiện mặc định cho tất cả người truy cập, "
+                 "dán URL vào biến WEB_APP_URL ở đầu file Python.",
+        )
+        active_qr_url = valid_web_address(entered_url)
+        if not entered_url.strip():
+            st.info("Chưa có liên kết Web công khai. Khi triển khai xong, hãy dán URL vào ô phía trên.")
+        elif not active_qr_url:
+            st.warning("Đường dẫn không hợp lệ. Cần nhập đầy đủ URL bắt đầu bằng https:// hoặc http://.")
+        elif is_localhost_url(active_qr_url):
+            st.warning("Địa chỉ localhost không thể mở từ điện thoại khác. Hãy dùng URL công khai sau khi triển khai.")
+        else:
+            try:
+                png_data = qr_png_bytes(active_qr_url)
+            except ImportError:
+                st.info('Cài thêm thư viện mã QR: python -m pip install "qrcode[pil]"')
+            else:
+                left, center, right = st.columns([1, 5, 1])
+                with center:
+                    st.image(png_data, width=185, alt="Mã QR dẫn đến WaveLab VSWR")
+                st.caption("Mã QR dẫn đến:")
+                st.code(active_qr_url, language=None, wrap_lines=True)
+                st.download_button(
+                    "Tải mã QR (.png)", data=png_data,
+                    file_name="WaveLab_VSWR_QR.png", mime="image/png",
+                    use_container_width=True, key="wl_qr_download",
+                )
+        st.caption("Lưu ý: URL nhập trong ô chỉ áp dụng cho phiên đang mở; "
+                   "điền WEB_APP_URL trong mã nguồn để cố định link cho mọi người dùng.")
     st.markdown('<div class="side-head">1. Thông số đường truyền</div>', unsafe_allow_html=True)
     freq_ghz=st.number_input("Tần số f (GHz)",min_value=.10,max_value=60.0,value=1.0,step=.1,
                               format="%.2f",help="f > 0")
